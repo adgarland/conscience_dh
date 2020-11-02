@@ -1,0 +1,556 @@
+---
+title: "Conscience Ngrams"
+author: "Andrew Garland"
+date: "May 8, 2018"
+output:
+  html_document:
+    df_print: kable
+    keep_md: true
+    fig_width: 7.5
+  word_document: default
+  html_notebook: 
+    df_print: kable
+  pdf_document: 
+    fig_width: 7.5
+    df_print: tibble
+---
+
+```{r setup, include=FALSE}
+
+library('stringr')
+library('tidytext')
+library('tidyverse')
+library('tokenizers')
+library('ggthemes')
+
+
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=36),
+                      tidy=TRUE,
+                      message = FALSE,
+                      warning = FALSE,
+                      fig.path = "figure_output/",
+                      fig.dim = c(6, 5))
+
+theme_set(theme_minimal())
+
+scale_color_discrete <- function(...)
+  scale_color_ptol()
+scale_fill_discrete <- function(...)
+  scale_fill_ptol()
+```
+
+```{r functions}
+
+make_clean_ngram <- function(ngram) {
+  na <- str_replace_all(ngram, "_[:upper:]{3,4}", " ") %>%
+    str_replace_all("_\\.", " ") %>%
+    str_replace_all("[:space:]+\\'", "\\'") %>%
+    str_replace_all("[:space:]+[:punct:]*[:space:]+", " ") %>%
+    str_replace_all("_", "") %>%
+    str_replace_all("[:space:]+", " ") %>%
+    str_trim()
+  return(na)
+}
+
+```
+
+
+## Google corpus
+
+Google has datasets of ngrams (up to 5grams) available freely. The datasets are organized by the first two letters, so we can find a lot of "conscience" ngrams by downloading the set of 5grams that start with "co". This is a huge data set. When uncompressed it is about 42.6Gb. Since R holds all of its working data in RAM, we would need a computer with well more than 45Gb of RAM to handle a file this size in R directly.
+
+There are some ways around these very large files. R has packages to chunk large files on the disk so that various operations can load the necessary data in pieces, do the operations, and then return the results. But in our case, we can use a simpler, more direct method. The dataset is all the ngrams starting with "co", and we might reasonably assume that the vast majority of them do not even *include* the word "conscience", much less start with it. Happily, there is a common command-line utility available in Unix systems by which we can filter out the ngrams that do not include "conscience".^[Windows users can do something similar with PowerShell, and Windows 10 users can install a Linux subsystem that gives access to Unix commands, including grep. This is how I performed the task. The following command tells the computer to look line-by-line for a string of letters that looks like "con" plus something plus "cienc", without respecting the letter case. The wildcard where the S should be covers archaic spellings.]
+
+~~~~~~~~
+
+grep -i "con.cienc" input_file.txt >> output_file.txt
+
+~~~~~~~~
+
+Even better, Google has tagged much of its corpus by part of speech. So "conscience" often appears as "conscience_NOUN", and other words in the ngrams are similarly tagged. This will be very useful, for it will allow us to look at verbs and adjectives, which is what we wanted anyway.
+
+One disadvantage of this dataset is that it will not have the words immediately *preceding* "conscience." We will have to get those a different way. In particular, we would be looking for a larger dataset like the one used above. Google's ngram viewer presents only the top ten wildcard results or so, which means any rarer terms will not be available. 
+
+It is common in text analysis to weed out very common words, usually because they are not informative. One would expect that if we could get every word that precedes "conscience" in some huge corpus, we would find that the most frequent result is "the". These results are not very interesting, so we will weed them out. In the dataset above, we were able to do this partly by identifying the part of speech to look for, and we will try something similar with the remainder here.
+
+### Following words
+
+To demonstrate some techniques, let's get the list of words that immediately follow "conscience" in the Google dataset. First we'll load up the data and do some basic transformations.
+
+```{r read}
+
+# Read in the result of our grep command
+# This file is very large, so it's stored in a special location on my computer.
+
+if (!exists("fivegram")) {
+  fivegram <- read_delim(
+    "//garland1/familyshare/DH_Big_Data/fivegrams.csv",
+    "\t",
+    escape_double = FALSE,
+    col_names = FALSE,
+    trim_ws = TRUE
+  )
+}
+```
+
+Google organizes the ngrams by year, so we'll find only the unique ones, and then count them up to make a guess about how frequent they are.
+
+```{r make_ngrams}
+
+names(fivegram) <- c("ngram", "year", "match_count", "volume_count")
+
+unique_fivegrams <- fivegram %>%
+  group_by(ngram) %>%
+  summarize(matches = sum(match_count),
+            volumes = sum(volume_count))
+
+untag_unique <- fivegram %>%
+  mutate(ngram = str_replace_all(ngram, "_[:upper:]{3,4}", "")) %>%
+  group_by(ngram) %>%
+  summarize(matches = sum(match_count),
+            volumes = sum(volume_count))
+
+unique_clean <- fivegram %>%
+  mutate(ngram = make_clean_ngram(ngram)) %>%
+  group_by(ngram) %>%
+  summarize(matches = sum(match_count),
+            volumes = sum(volume_count))
+
+tagged_ngrams <- unique_fivegrams %>%
+  filter(str_detect(ngram, "_NOUN")) %>%
+  mutate(ngram = str_replace_all(ngram, "[:space:]+[:punct:]*[:space:]+", " "))
+
+untagged_ngrams <- unique_fivegrams %>%
+  filter(!str_detect(ngram, "_NOUN")) %>%
+  mutate(ngram = str_replace_all(ngram, "[:punct:]", ""))
+
+conscience_five <- unique_fivegrams %>%
+  filter(str_sub(ngram, 1, 10) == "conscience") %>% 
+  # Look at the first 10 letters
+  mutate(ngram = str_replace_all(ngram, "[:punct:]", ""))
+
+conscience_verbs <- tagged_ngrams %>%
+  filter(str_detect(ngram, "[Cc]on[:alpha:]cienc")) %>%
+  separate(ngram,
+           into = paste0("word", seq(1, 5)),
+           sep = " ",
+           fill = "right") %>%
+  filter(
+    str_detect(word2, "_VERB") |
+      str_detect(word3, "_VERB") |
+      str_detect(word4, "_VERB") |
+      str_detect(word5, "_VERB")
+  ) 
+```
+
+The dataset has `r nrow(fivegram)` lines. If we filter out everything that doesn't start with "conscience", we get `r nrow(conscience_five)` lines. These numbers will be a useful source for comparison later, since the various counts can be understood in reference to them.
+
+When we look for the words immediately following "conscience," we get 800 different items. And unsurprisingly, the most common words are not very helpful. Interestingly, the aren't the same words we got with the small test from the Gutenberg data before, even though there is some overlap.
+
+Notice that we will strip out anything that uses punctuation or digits. Sometimes the text files have page numbers or punctuation after our word. It might be moderately interesting to see how many times "conscience" ends a sentence, but there isn't likely to much gain from it. So we will take those out.
+
+```{r next_words}
+next_words <- unique_clean %>%
+  filter(str_sub(ngram, 1, 10) == "conscience") %>%
+  separate(ngram,
+           into = paste0("word", seq(1, 5)),
+           sep = " ",
+           fill = "right") %>%
+  filter(!str_detect(word2, "[:punct:]+|[:digit:]+")) %>%
+  group_by(word2) %>%
+  summarize(n = sum(matches)) %>%
+  arrange(desc(n))
+
+next_words %>% top_n(15) %>%
+  ggplot(aes(fct_reorder(word2, -n), n)) +
+  geom_col() +
+  labs(x = "Next word")
+```
+
+As we might have expected, this analysis is essentially useless. There are a few items that might be interesting in the long run, but most of the words are just very common English words. We need to clean and simpify the list.
+
+First, we'll try to remove uninformative words. It is common in ngram analysis to remove "stop words"--those very common words that make the grammar work but don't add much meaning. Let's try that. The set here comes from the *tokenizers* package,^[@Mullen2016] and matches a common dataset used in other applications. Here is an example of stop words that we'll remove.
+
+```{r stop_words}
+format(words = sample(stop_words$word, 20))
+my_stop_words <- stop_words %>% filter(lexicon == "SMART")
+```
+
+Second, and more interestingly, we can trim the words down to their stems. For example, we might expect to see separate entries for "conscience accused" and "conscience accuses". These are clearly attributing the same action to conscience, and so it will be useful to drop the last letter and treat these as one. The *tokenizers* package has a command to do just this, so we'll apply it next.
+
+```{r word_stems}
+
+clean_next_words <- unique_clean %>%
+  filter(str_detect(word(ngram, 1), "con[:alpha:]ciences?")) %>% 
+  separate(ngram,
+           into = paste0("word", seq(1, 5)),
+           sep = " ",
+           fill = "right") %>%
+  filter(!str_detect(word2, "[:punct:]+|[:digit:]+")) %>%  
+  filter(!(word2 %in% my_stop_words$word)) %>% 
+  mutate(word2 = tokenize_word_stems(word2)) %>%
+  mutate(word2 = unlist(word2)) %>%
+  group_by(word2) %>%
+  summarize(n = sum(matches)) %>%
+  arrange(desc(n))
+
+clean_next_words %>% top_n(15)
+```
+```{r}
+ggplot(clean_next_words %>% top_n(10), aes(reorder(word2, -n), n)) +
+  geom_col() +
+  labs(x = "word")
+```
+
+This is a very different list. Two of the entries are different tenses of "tell", which supports the intuition that conscience has a "voice". The most common word is "sake", and usually this word immediately follows the possessive form of conscience. The locution "conscience' sake" is a biblical one. It comes from Romans 13, where Christians are told to obey the civil authorities "for conscience' sake," and from 1 Corinthians 10, where the question is about meat offered to idols. If the New Testament is a strong influence on the way we talk about conscience, these sorts of distinctive phrases would be what we should expect to see.
+
+The second most common is "I". I will speculate that this is because of the way tokenization works. "I" is a common first word for a sentence, and so it could be that when "conscience" ends a sentence, the next word is often "I". This would still be an interesting result, for it illustrates that when people talk about conscience, they are typically talking about themselves.
+
+The fourth most common word is "void," and I think we can see another biblical allusion. Let's look at all the ngrams that use this word.
+
+```{r void_words}
+void_words <- unique_clean %>%
+  filter(str_detect(ngram, " void")) %>%
+  mutate(ngram = str_replace_all(ngram, "[:punct:]", " ") %>%
+           str_to_lower() %>%
+           str_trim()) %>%
+  group_by(ngram) %>%
+  summarize(n = sum(matches)) %>%
+  ungroup %>%
+  arrange(desc(n))
+
+void_words %>% top_n(15)
+```
+
+This is pretty clearly a quotation from Acts 24:16 (KJV), where Paul is defending himself before Felix, the Roman governor. "And herein do I exercise myself, to have always a conscience void of offence toward God, and toward men."
+
+Two other words are "stricken" and "smote". These are different forms of the same word too. Let's look at "smote", since we saw that word used of King David.
+
+```{r smote_words}
+smote_words <- unique_clean %>% 
+  filter(str_detect(ngram, " sm(o|i)te")) %>% 
+  mutate(ngram = str_replace_all(ngram, "[:punct:]", " ") %>% 
+           str_to_lower() %>% 
+           str_trim()) %>% 
+  group_by(ngram) %>% 
+  summarize(n = sum(matches)) %>% 
+  ungroup %>% 
+  arrange(desc(n))
+
+smote_words %>% top_n(15)
+```
+
+This result is less obviously a biblical quotation. Result 1 could include results 3, 5, 7, and 8.^[The way ngram tokenization occurs basically ensures that these four line are included in the first result, but some quick arithmetic shows that any additional results will have low counts. This property of ngram analysis is well-known and one of the reasons for caution against overinterpreting the results.] The evidence for the biblical link is less clear, though the basic locution is still very common.
+
+An aside on the distribution of terms: Notice that these terms, even after being filtered, have a similarly-curved distribution. This distribution of words in a vocabulary is a common characteristic of natural language called Zipf's Law.
+
+```{r plot_next_words}
+ggplot(clean_next_words %>% top_n(20), aes(reorder(word2, -n), n)) + 
+  geom_col() +
+  labs(x = "word") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0))
+```
+
+For completeness, let's see what came after "and" and "of" in the very common n-grams.
+
+```{r}
+
+and_words <- unique_clean %>% 
+  filter(word(ngram, 2) == "and") %>% 
+  mutate(word3 = str_to_lower(word(ngram, 3))) %>% 
+  anti_join(my_stop_words, by = c("word3" = "word")) %>% 
+  group_by(word3) %>% 
+  summarize(matches = sum(matches)) %>% 
+  arrange(desc(matches))
+
+of_words <- unique_clean %>% 
+  filter(word(ngram, 2) == "of") %>% 
+  mutate(word3 = word(ngram, 3)) %>% 
+  group_by(word3) %>% 
+  summarize(matches = sum(matches)) %>% 
+  arrange(desc(matches))
+
+next_of_words <- unique_clean %>% 
+  filter(word(ngram, 2) == "of" & word(ngram, 3) %in% c("the", "a")) %>% 
+  mutate(word3 = word(ngram, 3),
+         word4 = word(ngram, 4)) %>% 
+  group_by(word3, word4) %>% 
+  summarize(matches = sum(matches)) %>% 
+  arrange(desc(matches))
+
+
+```
+
+
+When we filtered out the stop words we dropped a number of common verbs. Helping verbs in particular will be notable, for though they themselves are too common to be instructive, they link "conscience" to some other word that may be more informative.
+
+```{r get_third_words}
+
+helpers <- c( # make a list of helping verbs
+    "can",
+    "may",
+    "must",
+    "have",
+    "has",
+    "had",
+    #"hath",
+    "cannot",
+    "should",
+    "could",
+    "would",
+    #"did",
+    "will",
+    "shall"
+  )
+
+clean_all_words <- unique_clean %>%
+  filter(str_sub(ngram, 1, 10) == "conscience") %>%
+  separate(ngram,
+           into = paste0("word", seq(1, 5)),
+           sep = " ",
+           fill = "right") %>%
+  mutate_at(vars(contains("word")), str_replace_all, "(?!')[:punct:]", "") %>%
+  filter(word2 %in% helpers)
+
+third_words <- clean_all_words %>% 
+  filter(!(word3 %in% my_stop_words$word)) %>% 
+  group_by(word2, word3) %>% 
+  summarize(n = sum(matches)) %>% 
+  arrange(word2, desc(n)) %>% 
+  top_n(7)
+
+#third_words
+ 
+
+ggplot(third_words, aes(reorder_within(word3, -n, word2, sum), n)) + 
+  geom_col() +
+  scale_x_reordered() +
+  facet_wrap(~word2, scales = "free_x") +
+  labs(x = "word") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0)) 
+```
+
+We can also look at the words that follow "be*". Then we'll look at the words that follow tenses of "is".
+
+```{r linking_verbs}
+be_words <- unique_clean %>% 
+  filter(str_sub(ngram, 1, 10) == "conscience") %>%            
+  separate(ngram, 
+           into = paste0("word", seq(1, 5)), 
+           sep = " ",
+           fill = "right") %>% 
+  mutate_at(vars(contains("word")), str_replace_all, "(?!')[:punct:]", "") %>% 
+  filter(word2 %in% c(
+    "be",
+    "been",
+    "being",
+    "is",
+    "are",
+    "was",
+    "were",
+    "am"
+  ))
+
+third_bes <- be_words %>% 
+  filter(!(word3 %in% my_stop_words$word)) %>% 
+  group_by(word2, word3) %>% 
+  summarize(n = sum(matches)) %>% 
+  arrange(desc(n)) 
+
+third_bes %>% 
+  group_by(word2) %>% 
+  top_n(7, n) %>% 
+  ggplot(aes(reorder_within(word3, n, word2, sum), n, fill = word2)) +
+  geom_col() +
+  scale_x_reordered() +
+  facet_wrap(~ word2, scales = "free_y") +
+  guides(fill = F) +
+  coord_flip() +
+  labs(x = "Word", title = "Words after 'be'") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+
+```
+
+Next we'll try to borrow from Google's part of speech tagging. First, we'll look at adjectives following a "be" verb.
+
+```{r pos_tagging}
+extended_adjectives <- unique_clean %>% 
+  filter(str_detect(ngram, "con[:alpha:]cience \\w+ be ")) %>% 
+  mutate(helper = word(ngram, 2),
+         adjective = word(ngram, 4)) %>% 
+  group_by(helper, adjective) %>% 
+  summarize(vols = sum(volumes),
+            matches = sum(matches))
+
+pos <- tagged_ngrams %>% 
+  select(ngram) %>% 
+  separate_rows(ngram, sep = "\\s") %>% 
+  filter(!str_detect(ngram, "(^[:punct:])|(^[:digit:])")) %>% 
+  separate(ngram, 
+           into = c("word", "pos"), 
+           sep = "_", 
+           fill = "right") %>% 
+  mutate(word = str_to_lower(word)) %>% 
+  group_by(word, pos) %>% 
+  tally %>% 
+  mutate(frac = n / sum(n))
+
+top_pos <- pos %>% 
+  ungroup %>% 
+  select(-frac) %>% 
+  anti_join(my_stop_words, by = "word") %>% 
+  top_n(15, n) %>% 
+  arrange(desc(n))
+
+top_pos
+
+```
+
+```{r extended_pos, fig.height = 7}
+
+extended_adjectives_pos <- extended_adjectives %>% 
+  left_join(pos %>% select(word, pos), by = c("helper" = "word")) %>% 
+  arrange(pos, helper) %>% 
+  filter(pos %in% c("VERB", "PRT")) %>% 
+  filter(!helper %in% c("conscience", "suld", "to"))
+
+extended_adjectives_pos %>%
+  group_by(helper) %>%
+  top_n(15, matches) %>%
+  ggplot(aes(reorder_within(adjective, matches, helper, sum), 
+             matches, 
+             fill = helper)) +
+  geom_col() + 
+  facet_wrap(~ helper, scales = "free_y") +
+  scale_x_reordered() + 
+  coord_flip() + 
+  labs(x = "Adjective",
+       y = "Matches",
+       title = "Words after a helping verb and 'be'") +
+  guides(fill = F) +
+  theme(axis.text.x = element_text(
+    angle = 90,
+    hjust = 1,
+    vjust = 0.5
+  ))
+
+munged_ngrams <- extended_adjectives_pos %>% 
+  ungroup() %>% 
+  mutate(ngram = paste("conscience", helper, "be", adjective)) %>% 
+  select(helper, ngram, vols, matches) %>% 
+  arrange(desc(matches))
+
+munged_ngrams %>%
+  group_by(helper) %>%
+  top_n(10, matches) %>%
+  ggplot(aes(fct_reorder(ngram, matches), matches, fill = helper)) +
+  geom_col() +
+  scale_x_discrete(
+    labels = function(x)
+      str_replace(x, "conscience ", "")
+  ) +
+  facet_wrap( ~ helper, scales = "free_y") +
+  labs(x = "Phrase",
+       title = "Most common phrases for each helping verb") +
+  guides(fill = F) +
+  coord_flip()
+
+```
+
+We can also look at the ngrams in which a verb immediately follows "conscience". These come in two forms. The first is just a list of ordinary verbs. The second is a list of the helping verbs, which we have already considered. So we'll look here at the ordinary verbs.  
+
+```{r next_verbs}
+
+next_tag <- tagged_ngrams %>%
+  filter(str_detect(word(ngram, 1), "consciences?"),
+         str_detect(word(ngram, 2), "_VERB")) %>%
+  mutate(next_word = unlist(tokenize_word_stems(str_replace(
+    word(ngram, 2), "_VERB", ""
+  )))) %>%
+  group_by(next_word) %>%
+  #tally %>% arrange(desc(n))
+  summarize(vols = sum(volumes),
+            matches = sum(matches)) %>%
+  arrange(desc(matches))
+
+next_tag_filtered <- next_tag %>%
+  filter(!next_word %in% c(helpers, 
+    "i", "doe", "is", "was", "were", "be", "are", "do", "doth"))
+
+```
+
+A special case of the helping verbs is also worth noting. An ngram might go, "conscience did not ...". We would be interested in whatever goes in the elipsis.
+
+```{r negations}
+does_not <- tagged_ngrams %>%
+  filter(
+    str_detect(word(ngram, 1), "consciences?"),
+    str_detect(word(ngram, 2), "(did)|(does)"),
+    str_detect(word(ngram, 3), "not"),
+    str_detect(word(ngram, 4), "_VERB")
+  ) %>%
+  mutate(next_word = unlist(tokenize_word_stems(str_replace(
+    word(ngram, 4), "_VERB", ""
+  )))) %>%
+  group_by(next_word) %>%
+  summarize(matches = sum(matches)) %>%
+  arrange(desc(matches))
+
+all_not <- unique_clean %>%
+  filter(str_detect(word(ngram, 3), "not"),
+         word(ngram, 2) %in% c(helpers, "did", "does")) %>%
+  mutate(helper = word(ngram, 2),
+         next_word = word(ngram, 4)) %>%
+  filter(!is.na(next_word)) %>%
+  group_by(helper, next_word) %>%
+  summarize(matches = sum(matches)) %>%
+  anti_join(my_stop_words, by = c("next_word" = "word")) %>%
+  mutate(munge = paste(helper, "not", next_word, sep = " ")) %>%
+  arrange(desc(matches))
+
+all_not %>% 
+  ungroup %>% 
+  select(next_word, matches) %>% 
+  group_by(next_word) %>% 
+  summarize(matches = sum(matches)) %>% 
+  arrange(desc(matches)) %>% 
+  top_n(15, matches)
+
+all_not %>%
+  group_by(helper) %>%
+  filter(n() > 3) %>%
+  top_n(12, matches) %>%
+  ggplot(aes(reorder_within(next_word, matches, helper, sum), 
+             matches, 
+             fill = helper)) +
+  geom_col() +
+  scale_x_reordered() +
+  facet_wrap( ~ helper, scales = "free_y") +
+  labs(x = "Phrase", 
+       title = "Negations") +
+  guides(fill = F) +
+  coord_flip()
+```
+
+There is some data in the ngrams to indicate words that precede conscience.
+
+```{r}
+words_just_before_conscience <- unique_clean %>% 
+  filter(str_detect(ngram, "\\w+(?= conscience?)")) %>% 
+  mutate(preceding_word = str_extract(ngram, "\\w+(?= conscience?)")) %>% 
+  group_by(preceding_word) %>% 
+  summarize(n = sum(matches)) %>% 
+  arrange(desc(n))
+
+all_words_before_conscience <- unique_clean %>% 
+  filter(str_detect(ngram, "\\w+(?= conscience?)")) %>% 
+  unnest_tokens(words, ngram) %>% 
+  filter(!str_detect(words, "conscienc"),
+         !(words %in% my_stop_words$word)) %>% 
+  mutate(words = tokenize_word_stems(words),
+         words = unlist(words)) %>%
+  group_by(words) %>% 
+  tally() %>% 
+  arrange(desc(n))
+```
+
